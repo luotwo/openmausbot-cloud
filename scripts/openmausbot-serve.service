@@ -1,0 +1,17 @@
+[Unit]
+Description=OpenMausBot headless server
+After=network.target
+
+[Service]
+User=<Linux用户名>
+# PATH 里 .npm-global 和 /usr/bin 必须在前（模板自带的老 Node 可能挡住 Node 24）
+# instabox 盒子用户路径不同：把下面三处 /home/<Linux用户名> 换成 /data/home（盒子 HOME=/data/home）
+Environment=PATH=/home/<Linux用户名>/.npm-global/bin:/usr/bin:/usr/local/bin:/bin
+Environment=HOME=/home/<Linux用户名>
+WorkingDirectory=/home/<Linux用户名>
+ExecStart=/home/<Linux用户名>/.npm-global/bin/openmausbot serve --port 8799 --public-url https://<你的公开URL> --no-open
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

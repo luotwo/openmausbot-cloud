@@ -1,0 +1,14 @@
+[Unit]
+Description=apimart image shim (async task -> sync b64_json)
+After=network.target
+
+[Service]
+User=<Linux用户名>
+Environment=HOME=/home/<Linux用户名>
+WorkingDirectory=/home/<Linux用户名>/.openmausbot/apimart-shim
+ExecStart=/usr/bin/node /home/<Linux用户名>/.openmausbot/apimart-shim/server.mjs
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

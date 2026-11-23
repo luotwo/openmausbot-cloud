@@ -1,0 +1,7 @@
+{
+  "port": 8517,
+  "baseUrl": "https://api.apimart.ai",
+  "apiKey": "<你的中转API key，形如 sk-...>",
+  "pollMs": 2500,
+  "timeoutMs": 240000
+}
