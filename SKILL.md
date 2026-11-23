@@ -39,6 +39,7 @@ description: 在云主机（instabox 盒子或任意 Debian/Ubuntu VPS）上部�
 | F. 视频生成 | gen-video 工具 + everyBotRules | [references/7-video-tool.md](references/7-video-tool.md) |
 | G. 响应慢 → 秒级迁移 | headless serve + systemd + 公网入口 | [references/8-headless-serve.md](references/8-headless-serve.md) |
 | H. 非 instabox 的普通 VPS | 阶段 2-8 大部分通用，差异见各文件「普通 VPS 差异」段 | 同上 |
+| I. Windows 客户端多开（累加式，升级安全）| 一键安装器 + 架构说明 | [references/9-multi-open.md](references/9-multi-open.md) + `multi-open-windows/` 工具包 |
 
 ## 推荐部署顺序（全新盒子）
 
