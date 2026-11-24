@@ -6,7 +6,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 
-const PRIMARY = path.join(process.env.LOCALAPPDATA ?? "", "Programs", "openmausbot");
 // 副本目录：优先 OMB_COPY_DIR 覆盖 > 已有 OpenMausBot-Multi 的盘 > 第一个非 C 盘 > 用户目录
 function pickCopyDir() {
   if (process.env.OMB_COPY_DIR) return path.join(process.env.OMB_COPY_DIR, "OpenMausBot-Multi");
@@ -21,11 +20,67 @@ function pickCopyDir() {
   return path.join(process.env.USERPROFILE ?? "", "OpenMausBot-Multi");
 }
 const COPY = pickCopyDir();
-const ASAR = path.join(PRIMARY, "resources", "app.asar");
-const STATE = path.join(COPY, "primary-app.asar.state");
 
+// 主安装目录：动态检测（绝不写死）。优先级：OMB_PRIMARY_DIR > 运行中进程 > 注册表卸载项 > 常见路径 > 桌面快捷方式
+// 副本目录会被自动排除（判定条件：OpenMausBot.exe 存在 + resources/app.asar 存在；副本没有 asar）
+function detectPrimaryDir() {
+  if (process.env.OMB_PRIMARY_DIR) return path.resolve(process.env.OMB_PRIMARY_DIR);
+  const valid = (dir) => {
+    try {
+      return !!dir && fs.existsSync(path.join(dir, "OpenMausBot.exe")) &&
+        (fs.existsSync(path.join(dir, "resources", "app.asar")) || fs.existsSync(path.join(dir, "resources", "app", "package.json"))) &&
+        path.resolve(dir).toLowerCase() !== path.resolve(COPY).toLowerCase();
+    } catch { return false; }
+  };
+  // 1. 运行中的进程（可能同时列出主/副本 —— valid() 靠 app.asar 排除副本）
+  try {
+    const out = execFileSync("powershell", ["-NoProfile", "-Command",
+      "Get-Process OpenMausBot -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path -Unique"],
+      { encoding: "utf8", timeout: 20000 });
+    for (const line of (out ?? "").split(/\r?\n/)) {
+      const p = line.trim();
+      if (p && valid(path.dirname(p))) return path.dirname(p);
+    }
+  } catch {}
+  // 2. 注册表卸载项（NSIS 安装器写入 InstallLocation，支持自定义安装路径）
+  try {
+    const out = execFileSync("powershell", ["-NoProfile", "-Command",
+      "Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like '*OpenMausBot*' } | Select-Object -First 1 -ExpandProperty InstallLocation"],
+      { encoding: "utf8", timeout: 20000 });
+    const p = (out ?? "").trim();
+    if (p && valid(p)) return p;
+  } catch {}
+  // 3. 常见路径
+  const common = [
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "Programs", "openmausbot"),
+    process.env.ProgramFiles && path.join(process.env.ProgramFiles, "openmausbot"),
+    process.env["ProgramFiles(x86)"] && path.join(process.env["ProgramFiles(x86)"], "openmausbot"),
+  ].filter(Boolean);
+  for (const dir of common) if (valid(dir)) return dir;
+  // 4. 桌面快捷方式目标
+  try {
+    const lnk = path.join(process.env.USERPROFILE ?? "", "Desktop", "OpenMausBot.lnk");
+    if (fs.existsSync(lnk)) {
+      const out = execFileSync("powershell", ["-NoProfile", "-Command",
+        `$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('${lnk.replace(/'/g, "''")}'); Write-Output $s.TargetPath`],
+        { encoding: "utf8", timeout: 20000 });
+      const p = (out ?? "").trim();
+      if (p && valid(path.dirname(p))) return path.dirname(p);
+    }
+  } catch {}
+  return null;
+}
+const _detected = detectPrimaryDir();
+if (!_detected) {
+  console.error("[multi-build] 失败: 未找到 OpenMausBot 主安装目录（已检测运行进程/注册表/常见路径/桌面快捷方式）。请设环境变量 OMB_PRIMARY_DIR 指向后重试");
+  process.exit(2);
+}
+const PRIMARY = _detected;
 const log = (m) => console.log("[multi] " + m);
 const fail = (m) => { console.error("[multi] 失败: " + m); process.exit(2); };
+log(`主安装目录: ${PRIMARY}`);
+const ASAR = path.join(PRIMARY, "resources", "app.asar");
+const STATE = path.join(COPY, "primary-app.asar.state");
 
 function fingerprint() {
   const st = fs.statSync(ASAR);
