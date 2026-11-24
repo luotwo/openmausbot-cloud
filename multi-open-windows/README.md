@@ -6,13 +6,13 @@
 
 1. 装好 [OpenMausBot 桌面版](https://github.com/milind-soni/OpenMausBot/releases/latest/download/OpenMausBot-setup.exe)（默认路径安装）
 2. 装 Node.js：`winget install OpenJS.NodeJS.LTS`（装过跳过）
-3. 双击本目录的 **`install.cmd`** → 桌面出现「OpenMausBot-多开」快捷方式 → 完成
+3. 双击本目录的 **`install.cmd`** → 桌面出现「BSCBot-多开」快捷方式 → 完成
 
 ## 使用
 
 | 操作 | 结果 |
 |------|------|
-| 双击「OpenMausBot-多开」| 首次弹窗问每批数量（建议 3，记住）→ 新增打开一批 |
+| 双击「BSCBot-多开」| 首次弹窗问每批数量（建议 3，记住）→ 新增打开一批 |
 | 再双击一次 | 再新增一批（实例编号累加，永不冲突）|
 | 双击「多开-设置数量」| 重新弹窗改每批数量 |
 

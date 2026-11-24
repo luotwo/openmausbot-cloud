@@ -59,25 +59,15 @@ for (const f of FILES) {
 }
 console.log("[install] 工具文件已就位: " + TOOLS);
 
-// 3. 桌面快捷方式
-const shortcut = (name, target, args) => {
-  const ps = [
-    "$ws = New-Object -ComObject WScript.Shell",
-    `$desk = [Environment]::GetFolderPath('Desktop')`,
-    `$s = $ws.CreateShortcut("$desk\\${name}")`,
-    `$s.TargetPath = '${target}'`,
-    `$s.Arguments = '${args}'`,
-    `$s.WorkingDirectory = '${TOOLS.replace(/'/g, "''")}'`,
-    "$s.Save()",
-  ];
-  execFileSync("powershell", ["-NoProfile", "-Command", ps.join("; ")], { stdio: "ignore" });
-};
+// 3. 桌面入口：直接落 .cmd 文件（.lnk 快捷方式在某些机器会静默丢失，实测）
+const desk = path.join(HOME, "Desktop");
+if (!fs.existsSync(desk)) fail(`桌面目录不存在: ${desk}`);
 try {
-  shortcut("OpenMausBot-多开.lnk", path.join(TOOLS, "OpenMausBot-Multi.cmd"), "");
-  shortcut("OpenMausBot-多开-设置数量.lnk", path.join(TOOLS, "set-count.cmd"), "");
-  console.log("[install] 桌面快捷方式已创建");
+  fs.copyFileSync(path.join(TOOLS, "OpenMausBot-Multi.cmd"), path.join(desk, "BSCBot-多开.cmd"));
+  fs.copyFileSync(path.join(TOOLS, "set-count.cmd"), path.join(desk, "BSCBot-多开-设置数量.cmd"));
+  console.log("[install] 桌面已创建: BSCBot-多开.cmd / BSCBot-多开-设置数量.cmd");
 } catch (e) {
-  console.log("[install] 快捷方式创建失败（可手动双击 " + path.join(TOOLS, "OpenMausBot-Multi.cmd") + "）: " + e.message?.slice(0, 100));
+  console.log("[install] 桌面文件创建失败（可手动从 " + TOOLS + " 复制两个 .cmd 到桌面）: " + e.message?.slice(0, 100));
 }
 
 console.log(`
