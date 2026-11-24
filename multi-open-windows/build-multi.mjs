@@ -45,7 +45,7 @@ function detectPrimaryDir() {
   // 2. 注册表卸载项（NSIS 安装器写入 InstallLocation，支持自定义安装路径）
   try {
     const out = execFileSync("powershell", ["-NoProfile", "-Command",
-      "Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like '*OpenMausBot*' } | Select-Object -First 1 -ExpandProperty InstallLocation"],
+      "Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like '*OpenMausBot*' } | Select-Object -First 1 -ExpandProperty InstallLocation -ErrorAction SilentlyContinue"],
       { encoding: "utf8", timeout: 20000 });
     const p = (out ?? "").trim();
     if (p && valid(p)) return p;
@@ -78,6 +78,77 @@ if (!_detected) {
 const PRIMARY = _detected;
 const log = (m) => console.log("[multi] " + m);
 const fail = (m) => { console.error("[multi] 失败: " + m); process.exit(2); };
+
+// 主安装品牌补丁：窗口标题 + locales + server 默认 bot 名 → BSCBot
+// 幂等（OMB_REBRAND_TO 标记）；要求主安装已关闭；升级后指纹变化时自动补回；.omb-bak 可回滚
+function maybePatchPrimary() {
+  if (process.env.OMB_PATCH_PRIMARY !== "1") return;
+  const asar = path.join(PRIMARY, "resources", "app.asar");
+  if (!fs.existsSync(asar)) return;
+  let raw = fs.readFileSync(asar);
+  if (raw.includes("OMB_REBRAND_TO")) { log("主安装已含品牌补丁，跳过"); return; }
+  const running = (() => {
+    try {
+      const esc = PRIMARY.replace(/\\/g, "\\\\").replace(/'/g, "''");
+      const out = execFileSync("powershell", ["-NoProfile", "-Command",
+        `(Get-Process OpenMausBot -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '${esc}*' } | Measure-Object).Count`],
+        { encoding: "utf8", timeout: 20000 });
+      return parseInt((out ?? "0").trim(), 10) > 0;
+    } catch { return true; } // 检测失败按运行中处理（保守跳过）
+  })();
+  if (running) { log("主安装正在运行，跳过品牌补丁（关闭所有 OpenMausBot 窗口后再点一次多开即可补上）"); return; }
+  const BRAND = process.env.OMB_BRAND ?? "BSCBot";
+  const bak = asar + ".omb-bak";
+  if (!fs.existsSync(bak)) { fs.copyFileSync(asar, bak); log("已备份主安装 asar → " + bak); }
+  const tmp = path.join(process.env.TEMP ?? PRIMARY, "omb-primary-" + Date.now());
+  fs.mkdirSync(tmp, { recursive: true });
+  try {
+    const npx = process.platform === "win32" ? "npx.cmd" : "npx";
+    execFileSync(npx, ["-y", "@electron/asar", "extract", asar, tmp], { stdio: "inherit", shell: true });
+    const mf = path.join(tmp, "electron", "main.mjs");
+    let src = fs.readFileSync(mf, "utf8").replace(/\r\n/g, "\n");
+    if (!src.includes("OMB_REBRAND_TO")) {
+      const HELPER_ANCHOR = "function mainWindowTitle() {";
+      const HELPER = `const OMB_REBRAND_FROM = /MausBot|OpenMausBot/g;\nconst OMB_REBRAND_TO = ${JSON.stringify(BRAND)};\nfunction rebrand(t) { return typeof t === "string" ? t.replace(OMB_REBRAND_FROM, OMB_REBRAND_TO) : t; }\nfunction mainWindowTitle() {`;
+      if (!src.includes(HELPER_ANCHOR)) fail("主安装品牌补丁：未找到 mainWindowTitle 锚点");
+      src = src.replace(HELPER_ANCHOR, HELPER);
+      const TITLE_ANCHOR = `  win.setTitle(mainWindowTitle());\n  win.webContents.on("page-title-updated", event => {\n    if (!desktopRemoteAccess && !activeEnvironment(environmentsState)) return;\n    event.preventDefault();\n    win.setTitle(mainWindowTitle());\n  });`;
+      const TITLE_NEW = `  win.setTitle(rebrand(mainWindowTitle()));\n  win.webContents.on("page-title-updated", (event, pageTitle) => {\n    event.preventDefault();\n    win.setTitle(rebrand(typeof pageTitle === "string" && pageTitle ? pageTitle : mainWindowTitle()));\n  });`;
+      if (!src.includes(TITLE_ANCHOR)) fail("主安装品牌补丁：未找到标题处理器锚点");
+      src = src.replace(TITLE_ANCHOR, TITLE_NEW);
+      fs.writeFileSync(mf, src);
+    }
+    const locDir = path.join(tmp, "src", "locales");
+    if (fs.existsSync(locDir)) {
+      let n = 0;
+      for (const f of fs.readdirSync(locDir)) {
+        if (!f.endsWith(".json")) continue;
+        const p = path.join(locDir, f);
+        let t = fs.readFileSync(p, "utf8");
+        const nb = t.replace(/OpenMausBot/g, BRAND).replace(/MausBot/g, BRAND);
+        if (nb !== t) { fs.writeFileSync(p, nb); n++; }
+      }
+      if (n) log(`主安装 locales 品牌文案已改：${n} 个语言文件`);
+    }
+    execFileSync(npx, ["-y", "@electron/asar", "pack", tmp, asar], { stdio: "inherit", shell: true });
+    console.log(`[multi-build] 主安装品牌补丁完成：窗口标题/界面文案 → ${BRAND}（备份: ${bak}）`);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+// server/index.js 是 asar 外的独立目录文件，直接精准替换默认 bot 名
+function patchPrimaryServerIndex() {
+  const sidx = path.join(PRIMARY, "resources", "server", "index.js");
+  if (!fs.existsSync(sidx)) return;
+  const BRAND = process.env.OMB_BRAND ?? "BSCBot";
+  let s = fs.readFileSync(sidx, "utf8");
+  if (s.includes('"BSCBot"')) return;
+  const n = (s.match(/"MausBot"/g) ?? []).length;
+  if (n === 0) return;
+  s = s.replace(/"MausBot"/g, `"${BRAND}"`);
+  fs.writeFileSync(sidx, s);
+  console.log(`[multi-build] 主安装 server 默认 bot 名已改：${n} 处`);
+}
 log(`主安装目录: ${PRIMARY}`);
 const ASAR = path.join(PRIMARY, "resources", "app.asar");
 const STATE = path.join(COPY, "primary-app.asar.state");
@@ -99,8 +170,9 @@ const needRebuild = fp !== old;
 if (needRebuild) {
   log(old === null ? "首次构建副本..." : "检测到主安装更新，重建副本...");
   try {
+    const escCopy = COPY.replace(/\\/g, "\\\\").replace(/'/g, "''");
     execFileSync("powershell", ["-NoProfile", "-Command",
-      `Get-Process OpenMausBot -ErrorAction SilentlyContinue | Where-Object { $_.Path -like 'D:\\OpenMausBot-Multi*' } | Stop-Process -Force`],
+      `Get-Process OpenMausBot -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '${escCopy}*' } | Stop-Process -Force`],
       { stdio: "ignore" });
   } catch {}
   fs.mkdirSync(COPY, { recursive: true });
@@ -114,6 +186,12 @@ if (needRebuild) {
     const rc = e.status;
     if (rc === null || rc > 7) fail(`robocopy 退出码 ${rc}: ${e.message?.slice(0, 120)}`);
   }
+}
+
+// 主安装品牌补丁：升级重建时自动尝试；或显式 OMB_PATCH_PRIMARY=1（要求主安装已关闭）
+if (needRebuild || process.env.OMB_PATCH_PRIMARY === "1") {
+  maybePatchPrimary();
+  patchPrimaryServerIndex();
 }
 
 const asar = path.join(COPY, "resources", "app.asar");
@@ -158,6 +236,62 @@ const OFF = Number(process.env.OMB_PORT_OFFSET ?? 0);
 export const DESKTOP_PORTS = Object.freeze(BASE_PORTS.map((p) => p + OFF));`,
       );
       fs.writeFileSync(portsFile, ports);
+    }
+  }
+
+  // 品牌改名：窗口标题（任务栏/标题栏）MausBot/OpenMausBot → BSCBot（拦页面标题事件，含未读数前缀）
+  const BRAND = process.env.OMB_BRAND ?? "BSCBot";
+  const mainFile2 = path.join(appDir, "electron", "main.mjs");
+  if (fs.existsSync(mainFile2)) {
+    let msrc = fs.readFileSync(mainFile2, "utf8").replace(/\r\n/g, "\n"); // 归一化行尾（asar 内可能是 CRLF，锚点用 LF）
+    if (!msrc.includes("OMB_REBRAND_TO")) {
+      const HELPER_ANCHOR = "function mainWindowTitle() {";
+      const HELPER = `const OMB_REBRAND_FROM = /MausBot|OpenMausBot/g;
+const OMB_REBRAND_TO = ${JSON.stringify(BRAND)};
+function rebrand(t) { return typeof t === "string" ? t.replace(OMB_REBRAND_FROM, OMB_REBRAND_TO) : t; }
+function mainWindowTitle() {`;
+      if (!msrc.includes(HELPER_ANCHOR)) fail("品牌补丁：未找到 mainWindowTitle 锚点");
+      msrc = msrc.replace(HELPER_ANCHOR, HELPER);
+      const TITLE_ANCHOR = `  win.setTitle(mainWindowTitle());
+  win.webContents.on("page-title-updated", event => {
+    if (!desktopRemoteAccess && !activeEnvironment(environmentsState)) return;
+    event.preventDefault();
+    win.setTitle(mainWindowTitle());
+  });`;
+      const TITLE_NEW = `  win.setTitle(rebrand(mainWindowTitle()));
+  win.webContents.on("page-title-updated", (event, pageTitle) => {
+    event.preventDefault();
+    win.setTitle(rebrand(typeof pageTitle === "string" && pageTitle ? pageTitle : mainWindowTitle()));
+  });`;
+      if (!msrc.includes(TITLE_ANCHOR)) fail("品牌补丁：未找到窗口标题处理器锚点");
+      msrc = msrc.replace(TITLE_ANCHOR, TITLE_NEW);
+      fs.writeFileSync(mainFile2, msrc);
+      console.log(`[multi-build] 品牌补丁完成：窗口标题 → ${BRAND}`);
+    }
+  }
+
+  // 可见品牌树：界面翻译文案（locales）+ server 默认 bot 名（精准引号字符串替换）
+  const localesDir = path.join(appDir, "src", "locales");
+  if (fs.existsSync(localesDir)) {
+    let changed = 0;
+    for (const f of fs.readdirSync(localesDir)) {
+      if (!f.endsWith(".json")) continue;
+      const p = path.join(localesDir, f);
+      let t = fs.readFileSync(p, "utf8");
+      const before = t;
+      t = t.replace(/OpenMausBot/g, BRAND).replace(/MausBot/g, BRAND);
+      if (t !== before) { fs.writeFileSync(p, t); changed++; }
+    }
+    if (changed) console.log(`[multi-build] locales 品牌文案已改：${changed} 个语言文件`);
+  }
+  const serverIndex = path.join(appDir, "..", "server", "index.js");
+  if (fs.existsSync(serverIndex)) {
+    let s = fs.readFileSync(serverIndex, "utf8");
+    if (!s.includes('"BSCBot"')) {
+      const n = (s.match(/"MausBot"/g) ?? []).length;
+      s = s.replace(/"MausBot"/g, `"${BRAND}"`);
+      fs.writeFileSync(serverIndex, s);
+      console.log(`[multi-build] server 默认 bot 名已改：${n} 处`);
     }
   }
   // 5. 删除 asar（Electron 优先加载 resources\app 目录）+ 禁副本自更新
