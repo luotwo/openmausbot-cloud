@@ -90,14 +90,17 @@ if (needExtract) {
     fs.writeFileSync(mainFile, src);
   }
 
-  // 扩展本地端口表（内置只有 [8799,18799,28799]，多开多了会无端口可用 → 扩到 12）
+  // 端口段方案：每个实例按 OMB_PORT_OFFSET 偏移专属端口段（步长 500，≤12 实例全落在 <65536）
+  // 替代原静态表（原表 68799+ 超过 65535 端口上限是无效端口；且所有实例挤同一段会竞态）
   const portsFile = path.join(appDir, "electron", "desktop-ports.mjs");
   if (fs.existsSync(portsFile)) {
     let ports = fs.readFileSync(portsFile, "utf8");
-    if (!ports.includes("38799")) {
+    if (!ports.includes("OMB_PORT_OFFSET")) {
       ports = ports.replace(
-        /Object\.freeze\(\[8799[^\]]*\]\)/,
-        "Object.freeze([8799, 18799, 28799, 38799, 48799, 58799, 68799, 78799, 88799, 98799, 108799, 118799])",
+        /export const DESKTOP_PORTS = Object\.freeze\(\[[^\]]*\]\);/,
+        `const BASE_PORTS = [8799, 18799, 28799, 38799, 48799, 58799];
+const OFF = Number(process.env.OMB_PORT_OFFSET ?? 0);
+export const DESKTOP_PORTS = Object.freeze(BASE_PORTS.map((p) => p + OFF));`,
       );
       fs.writeFileSync(portsFile, ports);
     }

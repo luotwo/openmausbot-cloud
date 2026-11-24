@@ -55,8 +55,13 @@ for (let i = 1; i < nextId + batch; i++) {
 }
 if (nextId + batch - 1 > MAX_PORTS) fail(`已到本机端口上限（${MAX_PORTS} 个实例）。不再新增；可关闭部分实例或让 Claude 再扩端口`);
 
-// 4. 打开本批实例（每实例：独立 userData + 独立工作区 + 端口自动回退）
-//    必须错峰启动：同时启动会竞态（健康检查把别的实例的启动中端口误判为冲突 → abort）
+// 4. 打开本批实例（每实例：独立 userData + 独立工作区 + 专属端口段）
+//    端口段：OMB_PORT_OFFSET = (实例号-1)*500 → 各实例首候选端口唯一，从源头消除竞态
+//    错峰 10s 保留（多实例同时冷启动仍会拖慢就绪检查）
+const MAX_INSTANCES = 12;
+if (nextId + batch - 1 > MAX_INSTANCES) {
+  fail(`已达 ${MAX_INSTANCES} 实例上限（端口段用尽）。关闭部分实例后重试，或让 Claude 再扩`);
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 副本目录解析（与 build-multi.mjs 同逻辑）：OMB_COPY_DIR > 已有副本的盘 > 第一个非 C 盘 > 用户目录
 function pickCopyDir() {
@@ -79,11 +84,16 @@ for (let k = 0; k < batch; k++) {
   fs.mkdirSync(dataDir, { recursive: true });
   spawn(exe, [], {
     detached: true, stdio: "ignore",
-    env: { ...process.env, OMB_INSTANCE_ID: String(id), OMB_DATA_DIR: dataDir },
+    env: {
+      ...process.env,
+      OMB_INSTANCE_ID: String(id),
+      OMB_DATA_DIR: dataDir,
+      OMB_PORT_OFFSET: String((id - 1) * 500),
+    },
   }).unref();
   opened.push(id);
   if (k < batch - 1) {
-    log(`实例 ${id} 已启动，${10}s 后启动下一个（错峰防端口竞态）...`);
+    log(`实例 ${id} 已启动（端口段 ${(id - 1) * 500}+），${10}s 后启动下一个...`);
     await sleep(10000);
   }
 }
