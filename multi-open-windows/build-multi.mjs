@@ -86,7 +86,9 @@ function maybePatchPrimary() {
   const asar = path.join(PRIMARY, "resources", "app.asar");
   if (!fs.existsSync(asar)) return;
   let raw = fs.readFileSync(asar);
-  if (raw.includes("OMB_REBRAND_TO")) { log("主安装已含品牌补丁，跳过"); return; }
+  const alreadyV1 = raw.includes("OMB_REBRAND_TO");
+  const needV2 = !raw.includes("return rebrand(workspaceWindowTitle(");
+  if (alreadyV1 && !needV2) { log("主安装已含品牌补丁，跳过"); return; }
   const running = (() => {
     try {
       const esc = PRIMARY.replace(/\\/g, "\\\\").replace(/'/g, "''");
@@ -118,6 +120,15 @@ function maybePatchPrimary() {
       src = src.replace(TITLE_ANCHOR, TITLE_NEW);
       fs.writeFileSync(mf, src);
     }
+    // v2：wrap mainWindowTitle 返回值 —— 覆盖 persistEnvironments 等所有 setTitle 调用点（对已打 v1 的 asar 也生效）
+    if (!src.includes("return rebrand(workspaceWindowTitle(")) {
+      const RET_ANCHOR = "return workspaceWindowTitle(environmentsState, desktopRemoteAccess, homeWindow.cloudOrigin(), nativeT);";
+      if (src.includes(RET_ANCHOR)) {
+        src = src.replace(RET_ANCHOR, "return rebrand(workspaceWindowTitle(environmentsState, desktopRemoteAccess, homeWindow.cloudOrigin(), nativeT));");
+        fs.writeFileSync(mf, src);
+        console.log("[multi-build] 主安装品牌补丁 v2：mainWindowTitle 全调用点覆盖");
+      }
+    }
     const locDir = path.join(tmp, "src", "locales");
     if (fs.existsSync(locDir)) {
       let n = 0;
@@ -136,18 +147,18 @@ function maybePatchPrimary() {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 }
-// server/index.js 是 asar 外的独立目录文件，直接精准替换默认 bot 名
+// server/index.js 是 asar 外的独立目录文件，全量替换内嵌品牌文案 + 默认 bot 名
 function patchPrimaryServerIndex() {
   const sidx = path.join(PRIMARY, "resources", "server", "index.js");
   if (!fs.existsSync(sidx)) return;
   const BRAND = process.env.OMB_BRAND ?? "BSCBot";
   let s = fs.readFileSync(sidx, "utf8");
-  if (s.includes('"BSCBot"')) return;
-  const n = (s.match(/"MausBot"/g) ?? []).length;
-  if (n === 0) return;
-  s = s.replace(/"MausBot"/g, `"${BRAND}"`);
+  if (!s.includes("MausBot") && !s.includes("OpenMausBot")) { log("主安装 server 品牌文案已全部替换，跳过"); return; }
+  const n1 = (s.match(/MausBot/g) ?? []).length;
+  const n2 = (s.match(/OpenMausBot/g) ?? []).length;
+  s = s.replace(/OpenMausBot/g, BRAND).replace(/MausBot/g, BRAND);
   fs.writeFileSync(sidx, s);
-  console.log(`[multi-build] 主安装 server 默认 bot 名已改：${n} 处`);
+  console.log(`[multi-build] 主安装 server 品牌文案已改：MausBot×${n1} + OpenMausBot×${n2}`);
 }
 log(`主安装目录: ${PRIMARY}`);
 const ASAR = path.join(PRIMARY, "resources", "app.asar");
@@ -268,6 +279,15 @@ function mainWindowTitle() {`;
       fs.writeFileSync(mainFile2, msrc);
       console.log(`[multi-build] 品牌补丁完成：窗口标题 → ${BRAND}`);
     }
+    // v2：wrap mainWindowTitle 返回值 —— 覆盖 persistEnvironments 等所有 setTitle 调用点
+    if (!msrc.includes("return rebrand(workspaceWindowTitle(")) {
+      const RET_ANCHOR = "return workspaceWindowTitle(environmentsState, desktopRemoteAccess, homeWindow.cloudOrigin(), nativeT);";
+      if (msrc.includes(RET_ANCHOR)) {
+        msrc = msrc.replace(RET_ANCHOR, "return rebrand(workspaceWindowTitle(environmentsState, desktopRemoteAccess, homeWindow.cloudOrigin(), nativeT));");
+        fs.writeFileSync(mainFile2, msrc);
+        console.log("[multi-build] 品牌补丁 v2：mainWindowTitle 全调用点覆盖");
+      }
+    }
   }
 
   // 可见品牌树：界面翻译文案（locales）+ server 默认 bot 名（精准引号字符串替换）
@@ -287,11 +307,13 @@ function mainWindowTitle() {`;
   const serverIndex = path.join(appDir, "..", "server", "index.js");
   if (fs.existsSync(serverIndex)) {
     let s = fs.readFileSync(serverIndex, "utf8");
-    if (!s.includes('"BSCBot"')) {
-      const n = (s.match(/"MausBot"/g) ?? []).length;
-      s = s.replace(/"MausBot"/g, `"${BRAND}"`);
+    if (s.includes("MausBot") || s.includes("OpenMausBot")) {
+      const n1 = (s.match(/MausBot/g) ?? []).length;
+      const n2 = (s.match(/OpenMausBot/g) ?? []).length;
+      // 全量大小写敏感替换（内嵌翻译文案 1000+ 处 + 默认名；小写的 openmausbot.com/协议串不受影响）
+      s = s.replace(/OpenMausBot/g, BRAND).replace(/MausBot/g, BRAND);
       fs.writeFileSync(serverIndex, s);
-      console.log(`[multi-build] server 默认 bot 名已改：${n} 处`);
+      console.log(`[multi-build] server 品牌文案已改：MausBot×${n1} + OpenMausBot×${n2}`);
     }
   }
   // 5. 删除 asar（Electron 优先加载 resources\app 目录）+ 禁副本自更新
